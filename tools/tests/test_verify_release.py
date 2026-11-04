@@ -17,7 +17,9 @@ class DownloadedReleaseTests(unittest.TestCase):
                 "source_commit": source, "sdk_commit": "b" * 40,
                 "version": "1.0.0", "signing": "developer-id-notarized"}))
             if extra:
-                package.writestr(extra, "unsafe")
+                member = zipfile.ZipInfo("placeholder")
+                member.filename = extra
+                package.writestr(member, "unsafe")
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n")
         archive.with_suffix(".zip.notarization.json").write_text(json.dumps({

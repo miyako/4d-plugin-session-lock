@@ -36,13 +36,15 @@ def verify(directory, version, source, expected_sha):
         with zipfile.ZipFile(archive) as package:
             names = set()
             for entry in package.infolist():
-                path = PurePosixPath(entry.filename)
+                raw_name = entry.orig_filename
+                path = PurePosixPath(raw_name)
                 mode = entry.external_attr >> 16
-                if (entry.filename in names or "\\" in entry.filename
+                if (raw_name in names or "\\" in raw_name
                         or path.is_absolute() or ".." in path.parts
-                        or ":" in entry.filename or stat.S_ISLNK(mode)):
+                        or ":" in raw_name or stat.S_ISLNK(mode)
+                        or path.as_posix() != raw_name.rstrip("/")):
                     raise ValueError("Unsafe release ZIP member")
-                names.add(entry.filename)
+                names.add(raw_name)
             package.extractall(root)
             if sys.platform != "win32":
                 for entry in package.infolist():
