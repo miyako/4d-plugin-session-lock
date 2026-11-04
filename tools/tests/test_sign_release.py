@@ -1,4 +1,5 @@
 import os
+import io
 from pathlib import Path
 import subprocess
 import tempfile
@@ -29,6 +30,17 @@ class SigningGateTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Notarize timed out") as error:
                 sign_release.command("Notarize", ["secret-password"])
         self.assertNotIn("secret-password", str(error.exception))
+
+    def test_codesign_diagnostic_redacts_configured_values(self):
+        result = subprocess.CompletedProcess([], 1, b"", b"signing failed for secret-team")
+        diagnostic = io.StringIO()
+        with patch.dict(os.environ, {"NOTARYTOOL_TEAM_ID": "secret-team"}), \
+                patch("subprocess.run", return_value=result), \
+                patch("sys.stderr", diagnostic):
+            with self.assertRaises(RuntimeError):
+                sign_release.command("Sign complete combined bundle", ["codesign"])
+        self.assertIn("signing failed for ***", diagnostic.getvalue())
+        self.assertNotIn("secret-team", diagnostic.getvalue())
 
     def notarization_case(self, status):
         environment = {name: "test-value" for name in sign_release.REQUIRED_SECRETS}
@@ -68,6 +80,7 @@ class SigningGateTests(unittest.TestCase):
                         sign_release.sign(root, output)
                     self.assertFalse(output.with_suffix(".zip.notarization.json").exists())
         self.assertIn("Delete ephemeral signing keychain", labels)
+        self.assertIn("Restore original user keychain search list", labels)
 
     def test_apple_accepted_is_required(self):
         self.notarization_case("Invalid")

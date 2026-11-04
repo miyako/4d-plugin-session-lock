@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,13 @@ def command(label, arguments, timeout=300):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{label} timed out") from None
     if result.returncode:
+        if label in ("Sign complete combined bundle", "Verify signed macOS code object"):
+            diagnostic = result.stderr.decode("utf-8", errors="replace")
+            for name in REQUIRED_SECRETS:
+                value = os.environ.get(name)
+                if value:
+                    diagnostic = diagnostic.replace(value, "***")
+            print(diagnostic, file=sys.stderr)
         # Commands contain secrets. Never render argv or unfiltered tool output.
         raise RuntimeError(f"{label} failed (exit {result.returncode})")
     return result
@@ -50,6 +58,8 @@ def sign(root, output):
         keychain = directory / "release.keychain-db"
         certificate = directory / "certificate.p12"
         created = False
+        search_changed = False
+        original_search = []
         try:
             encoded = "".join(os.environ["APPLE_DEVELOPER_ID_CERTIFICATE"].split())
             certificate.write_bytes(base64.b64decode(encoded, validate=True))
@@ -62,6 +72,13 @@ def sign(root, output):
                     ["security", "set-keychain-settings", "-lut", "3600", str(keychain)])
             command("Unlock signing keychain",
                     ["security", "unlock-keychain", "-p", password, str(keychain)])
+            original_search = shlex.split(command(
+                "Read user keychain search list",
+                ["security", "list-keychains", "-d", "user"]).stdout.decode())
+            command("Register ephemeral signing keychain",
+                    ["security", "list-keychains", "-d", "user", "-s",
+                     str(keychain), *original_search])
+            search_changed = True
             command("Import Developer ID certificate",
                     ["security", "import", str(certificate), "-P",
                      os.environ["APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD"],
@@ -129,9 +146,15 @@ def sign(root, output):
         finally:
             if certificate.exists():
                 certificate.unlink()
-            if created:
-                command("Delete ephemeral signing keychain",
-                        ["security", "delete-keychain", str(keychain)])
+            try:
+                if search_changed:
+                    command("Restore original user keychain search list",
+                            ["security", "list-keychains", "-d", "user", "-s",
+                             *original_search])
+            finally:
+                if created:
+                    command("Delete ephemeral signing keychain",
+                            ["security", "delete-keychain", str(keychain)])
 
 
 def main():
