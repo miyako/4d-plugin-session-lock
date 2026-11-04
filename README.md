@@ -226,8 +226,8 @@ For private cross-platform staging, copy the Windows `Contents/Windows64`
 directory into the macOS bundle's `Contents`, retaining the shared manifest.
 Do not install both platform containers as duplicate plug-ins in the same
 Plugins directory. Local output is unsigned/ad-hoc development output, **not
-Developer ID signed or notarized distribution**. There are no published
-releases, signing workflows, version-bump/tag pushes, or signing secrets.
+Developer ID signed or notarized distribution**. CI development artifacts
+are not production releases; see the gated release policy below.
 
 ## Validation
 
@@ -247,9 +247,29 @@ Run the real host project with matching tool4d (free, no license activation):
 Require exit zero **and** an exact `PASS` stdout line. The host test checks
 native load, object/collection shapes, stopped defaults, idempotent commands,
 polling and cleanup without assuming a desktop lock state.
-`.github/workflows/build.yml` performs read-only macOS universal and Windows
-x64 builds, native tests and tool4d tests on push, PR and manual dispatch.
-It does not sign, publish artifacts, create releases, tags, or push commits.
+`.github/workflows/build.yml` calls `validate.yml` with one exact source commit.
+It performs macOS universal and Windows x64 builds, native tests, packaging
+regressions and real tool4d tests on push, PR and manual dispatch. The host gate
+requires both a no-plug-in control and the plug-in fixture to exit zero and
+emit their exact success markers; neither a baseline failure nor a post-PASS
+crash is waived.
+
+The same macOS artifact and universal native test executables are then tested
+on an Intel runner. Packaging consumes the same run's two native artifacts,
+rejects differing source/SDK/version/resource bytes, checks binary
+architectures and inventories, and verifies ZIP extraction before loading the
+combined plug-in in tool4d. Artifact paths/checksums are portable forward-slash
+paths; source and SDK notices are retained. The final development ZIP and
+SHA-256 sidecar are CI artifacts, explicitly **not production-signed releases**.
+PR validation has read-only repository permissions and never receives signing
+secrets or publishes a release.
+
+The explicitly authorized `miyako-session-lock-plugin` branch instead uses
+`signing-check.yml`: its narrowly scoped push trigger runs those same reusable
+validation and signing gates and produces a **candidate Actions artifact only**.
+It cannot tag, merge or publish. It is not triggered by arbitrary branches,
+forks or pull requests. `sign-candidate.yml` is shared with production so
+candidate checks are not a build-only approximation of the release path.
 
 Manual desktop checklist (perform yourself; automated tests do not alter
 session settings):
@@ -284,9 +304,18 @@ command assertions. No host security/attach settings were changed.
 The local macOS snapshot key was absent: Start correctly returned success,
 running/available true, lock unknown and diagnostic 20002. The agent did not
 perform physical lock/unlock, RDP or sleep/wake tests. Windows SDK compilation,
-linking and runtime remain unexecuted locally; CI is provided but has not been
-run or pushed. Do not infer platform support validation from source or stub
-syntax checks.
+linking and runtime remain unexecuted locally. Do not infer physical lock
+integration or minimum-OS coverage from synthetic/lifecycle host tests.
+
+### Hosted evidence (2026-11-04)
+
+The [initial hosted run](https://github.com/miyako/4d-plugin-session-lock/actions/runs/41771482391)
+at commit `e500d0460788bb5fc09665070a9e42dc8d63b0f9` passed native
+compilation/linking, CTest and the complete tool4d gate on both macOS and Windows
+GitHub runners, including exit zero. This distinguishes the local shutdown
+failure above from hosted results. Windows physical lock/unlock, RDP and
+sleep/wake integration have not been manually verified. Extended same-artifact
+Intel/package validation is a separate CI gate, not implied by that initial run.
 
 ### User-reported interactive acceptance (2026-11-04)
 
@@ -299,6 +328,57 @@ version, hardware and per-step outputs were not supplied.
 This report does not clear the separate automated tool4d shutdown failure
 above or verify Windows, other macOS configurations, RDP, sleep/wake or the
 remaining manual checklist cases.
+
+## Production release policy
+
+Only **Developer ID-signed and Apple-notarized macOS payloads** are eligible
+for production publication. There is **no unsigned release fallback**.
+The combined ZIP's Windows x64 `.4DX` is **not Authenticode-signed**; do not
+describe the whole cross-platform package as Windows-signed.
+
+`release.yml` is manual-only, runs from `main`, and requires an existing approved
+`vVERSION` tag whose exact commit is on main and matches `VERSION`. It never
+creates/moves tags, bumps versions or merges branches. `publish` defaults to
+false; publishing requires explicit opt-in after approval. The production job
+uses the `release` environment and consumes the **same run's fully validated
+package**, not a previous unrelated build.
+
+Before any tag/publication, configure the following repository Actions secrets
+(or secrets in an approved `release` environment) through **GitHub Settings →
+Secrets and variables → Actions**. Never put their values in code or chat:
+
+| Secret name | Purpose |
+|---|---|
+| `APPLE_DEVELOPER_ID_CERTIFICATE` | Base64-encoded Developer ID Application `.p12` |
+| `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD` | `.p12` export password |
+| `KEYCHAIN_PASSWORD` | Ephemeral signing-keychain password |
+| `NOTARYTOOL_APPLE_ID` | Apple account used for notarization |
+| `NOTARYTOOL_TEAM_ID` | Expected Apple Developer team |
+| `NOTARYTOOL_PASSWORD` | App-specific notarization password |
+
+Use the [secure repository settings page](https://github.com/miyako/4d-plugin-session-lock/settings/secrets/actions);
+configure environment reviewers/protection rules as appropriate before allowing
+production runs. Credential metadata initially showed none; the user has since
+configured all six names, verified through names-only metadata. Values are
+never retrieved into the local workspace. Actual production readiness requires
+successful hosted signing/notarization, not merely the presence of secret names.
+
+Production imports a certificate into an ephemeral keychain, discovers the
+Developer ID identity, signs the combined bundle, and checks the macOS code
+object's signature, expected team, hardened runtime and secure timestamp.
+The original native-artifact inventories remain pre-sign provenance; a new
+final-byte inventory/checksum records the signed package. Apple must explicitly
+return `Accepted` for the **exact ZIP bytes**. The final ZIP is extracted and loaded in tool4d on both arm64 and Intel
+before publication, and the tag is rechecked for immutability.
+The release is first uploaded as a draft; its actual downloaded asset bytes,
+Accepted evidence and source provenance are checked before making it public,
+and the published assets are downloaded and checked again. Failures at any gate
+block further publication steps; no `continue-on-error` signing path exists.
+Signing-tool diagnostics never echo secret arguments.
+
+The ZIP is not stapled; notarization-ticket lookup requires network access.
+No DMG or offline-stapling guarantee is provided. Production publication has
+not been executed merely because workflow wiring or mocked signing tests pass.
 
 ## Provenance and license
 

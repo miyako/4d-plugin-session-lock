@@ -1,0 +1,139 @@
+name: Sign and validate candidate (never publish)
+
+on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+    secrets:
+      APPLE_DEVELOPER_ID_CERTIFICATE:
+        required: true
+      APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD:
+        required: true
+      KEYCHAIN_PASSWORD:
+        required: true
+      NOTARYTOOL_APPLE_ID:
+        required: true
+      NOTARYTOOL_TEAM_ID:
+        required: true
+      NOTARYTOOL_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    if: github.repository == 'miyako/4d-plugin-session-lock' && ((github.event_name == 'push' && github.ref == 'refs/heads/miyako-session-lock-plugin') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-development-package
+          path: SessionLock/build/download
+      - name: Verify and extract same-run validated ZIP
+        run: |
+          cd SessionLock/build/download
+          shasum -a 256 -c SessionLock-development.zip.sha256
+          mkdir ../signed-root
+          ditto -x -k SessionLock-development.zip ../signed-root
+          cd ../../..
+          python tools/package.py verify --root SessionLock/build/signed-root
+      - name: Developer ID sign and require notarization Accepted
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARYTOOL_APPLE_ID: ${{ secrets.NOTARYTOOL_APPLE_ID }}
+          NOTARYTOOL_TEAM_ID: ${{ secrets.NOTARYTOOL_TEAM_ID }}
+          NOTARYTOOL_PASSWORD: ${{ secrets.NOTARYTOOL_PASSWORD }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python tools/sign_release.py --root SessionLock/build/signed-root --output "SessionLock/build/SessionLock-$RELEASE_VERSION.zip"
+      - name: Extract and validate final signed distribution on arm64
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p SessionLock/build/final-check SessionLock/SessionLock-test/Plugins
+          ditto -x -k "SessionLock/build/SessionLock-$RELEASE_VERSION.zip" SessionLock/build/final-check
+          python tools/package.py verify --root SessionLock/build/final-check
+          cp -R SessionLock/build/final-check/SessionLock.bundle SessionLock/SessionLock-test/Plugins/
+          python tools/download_tool4d.py --output SessionLock/build/tool4d
+          python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/final-signed
+      - name: Preserve accepted candidate for same-run Intel validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-notarized-candidate
+          path: |
+            SessionLock/build/SessionLock-${{ inputs.version }}.zip
+            SessionLock/build/SessionLock-${{ inputs.version }}.zip.sha256
+            SessionLock/build/SessionLock-${{ inputs.version }}.zip.notarization.json
+          if-no-files-found: error
+      - name: Preserve signed-host diagnostics (no credentials)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-signed-arm64
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn
+
+  intel:
+    needs: sign
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-notarized-candidate
+          path: SessionLock/build
+      - name: Verify and load exact final signed ZIP on Intel
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cd SessionLock/build
+          shasum -a 256 -c "SessionLock-$RELEASE_VERSION.zip.sha256"
+          mkdir final-check
+          ditto -x -k "SessionLock-$RELEASE_VERSION.zip" final-check
+          cd ../..
+          python tools/package.py verify --root SessionLock/build/final-check
+          codesign --verify --strict --all-architectures SessionLock/build/final-check/SessionLock.bundle/Contents/MacOS/SessionLock
+          mkdir -p SessionLock/SessionLock-test/Plugins
+          cp -R SessionLock/build/final-check/SessionLock.bundle SessionLock/SessionLock-test/Plugins/
+          python tools/download_tool4d.py --output SessionLock/build/tool4d
+          python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/final-signed-intel
+      - name: Preserve signed Intel diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-signed-intel
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn

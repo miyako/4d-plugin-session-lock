@@ -1,0 +1,221 @@
+name: Validate native distribution
+
+on:
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: macos-universal
+          - os: windows-latest
+            target: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Packaging regression tests
+        run: python -m unittest discover -s tools/tests -v
+      - name: Configure macOS universal
+        if: runner.os == 'macOS'
+        run: cmake -S SessionLock -B SessionLock/build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+      - name: Configure Windows x64
+        if: runner.os == 'Windows'
+        run: cmake -S SessionLock -B SessionLock/build -A x64
+      - name: Build native plugin and tests
+        run: cmake --build SessionLock/build --config Release --parallel
+      - name: Native tests
+        run: ctest --test-dir SessionLock/build -C Release --output-on-failure
+      - name: Download tool4d
+        run: python tools/download_tool4d.py --output SessionLock/build/tool4d
+      - name: Baseline and real host gate
+        run: python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/host
+      - name: Stage verified source artifact
+        shell: python
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          from pathlib import Path
+          import os, subprocess, sys
+          subprocess.run([
+              sys.executable, "tools/package.py", "stage",
+              "--target", os.environ["NATIVE_TARGET"],
+              "--output", "SessionLock/build/native-stage",
+              "--compiler", Path("SessionLock/build/toolchain.json").read_text(),
+          ], check=True)
+      - name: Preserve native permissions in artifact transport
+        run: tar -czf SessionLock/build/native-${{ matrix.target }}.tar.gz -C SessionLock/build/native-stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: SessionLock/build/native-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+      - name: Preserve diagnostics even when a gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.target }}
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/Testing/Temporary/
+            SessionLock/build/toolchain.json
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn
+
+  intel:
+    name: Test same macOS artifact on Intel
+    needs: build
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-macos-universal
+          path: SessionLock/build/transport
+      - name: Extract exact arm64-tested universal artifact
+        run: |
+          mkdir -p SessionLock/build/native-stage
+          tar -xzf SessionLock/build/transport/native-macos-universal.tar.gz -C SessionLock/build/native-stage
+      - name: Verify native artifact inventory
+        run: python tools/package.py verify-artifact --root SessionLock/build/native-stage
+      - name: Test native universal executables on Intel
+        run: |
+          SessionLock/build/native-stage/native-tests/core_tests
+          SessionLock/build/native-stage/native-tests/backend_smoke
+      - name: Install same plugin artifact into host fixture
+        run: |
+          mkdir -p SessionLock/SessionLock-test/Plugins
+          cp -R SessionLock/build/native-stage/payload/SessionLock.bundle SessionLock/SessionLock-test/Plugins/
+      - name: Download Intel tool4d
+        run: python tools/download_tool4d.py --output SessionLock/build/tool4d
+      - name: Intel baseline and same-artifact host gate
+        run: python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/host
+      - name: Preserve Intel diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-macos-intel
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn
+
+  package:
+    name: Assemble and verify combined package
+    needs: [build, intel]
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: SessionLock/build/transport
+          merge-multiple: true
+      - name: Extract both native source artifacts
+        run: |
+          mkdir -p SessionLock/build/mac SessionLock/build/win
+          tar -xzf SessionLock/build/transport/native-macos-universal.tar.gz -C SessionLock/build/mac
+          tar -xzf SessionLock/build/transport/native-windows-x64.tar.gz -C SessionLock/build/win
+      - name: Combine source-matched artifacts
+        run: python tools/package.py combine --mac SessionLock/build/mac --windows SessionLock/build/win --output SessionLock/build/package
+      - name: Archive and verify extracted distribution
+        run: python tools/package.py archive --root SessionLock/build/package --output SessionLock/build/SessionLock-development.zip
+      - name: Load extracted combined artifact in actual host
+        run: |
+          mkdir -p SessionLock/build/extracted SessionLock/SessionLock-test/Plugins
+          ditto -x -k SessionLock/build/SessionLock-development.zip SessionLock/build/extracted
+          python tools/package.py verify --root SessionLock/build/extracted
+          cp -R SessionLock/build/extracted/SessionLock.bundle SessionLock/SessionLock-test/Plugins/
+          python tools/download_tool4d.py --output SessionLock/build/tool4d
+          python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/host
+      - name: Upload unsigned development distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-development-package
+          path: |
+            SessionLock/build/SessionLock-development.zip
+            SessionLock/build/SessionLock-development.zip.sha256
+          if-no-files-found: error
+      - name: Preserve packaging diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-combined-package
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn
+
+  package-intel:
+    name: Load final combined ZIP on Intel
+    needs: package
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-development-package
+          path: SessionLock/build/download
+      - name: Verify extraction and load same combined package on Intel
+        run: |
+          cd SessionLock/build/download
+          shasum -a 256 -c SessionLock-development.zip.sha256
+          mkdir ../extracted
+          ditto -x -k SessionLock-development.zip ../extracted
+          cd ../../..
+          python tools/package.py verify --root SessionLock/build/extracted
+          mkdir -p SessionLock/SessionLock-test/Plugins
+          cp -R SessionLock/build/extracted/SessionLock.bundle SessionLock/SessionLock-test/Plugins/
+          python tools/download_tool4d.py --output SessionLock/build/tool4d
+          python tools/host.py --distribution SessionLock/build/tool4d --logs SessionLock/build/diagnostics/host
+      - name: Preserve final Intel package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-final-package-intel
+          path: |
+            SessionLock/build/diagnostics/
+            SessionLock/build/tool4d/download.json
+          if-no-files-found: warn

@@ -2,93 +2,19 @@ name: Build and test
 
 on:
   push:
+    branches-ignore: [miyako-session-lock-plugin]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Configure macOS universal plugin
-        if: runner.os == 'macOS'
-        run: cmake -S SessionLock -B SessionLock/build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
-
-      - name: Configure Windows x64 plugin
-        if: runner.os == 'Windows'
-        run: cmake -S SessionLock -B SessionLock/build -A x64
-
-      - name: Build
-        run: cmake --build SessionLock/build --config Release
-
-      - name: Native tests
-        run: ctest --test-dir SessionLock/build -C Release --output-on-failure
-
-      - name: Download tool4d 21.1
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            platform=win
-            archive=tool4d_win.tar.xz
-          else
-            platform=mac
-            case "$(uname -m)" in
-              arm64) archive=tool4d_arm64.tar.xz ;;
-              x86_64) archive=tool4d_x86_64.tar.xz ;;
-              *) echo "Unsupported runner architecture" >&2; exit 1 ;;
-            esac
-          fi
-          mkdir -p SessionLock/build/tool4d
-          curl --fail --location --retry 3 --connect-timeout 30 --max-time 300 \
-            "https://resources-download.4d.com/release/21.x/21.1/latest/$platform/$archive" \
-            --output SessionLock/build/tool4d.tar.xz
-          tar -xJf SessionLock/build/tool4d.tar.xz -C SessionLock/build/tool4d
-
-      - name: Real 4D host tests
-        timeout-minutes: 5
-        shell: python
-        run: |
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-
-          root = Path.cwd()
-          distribution = root / "SessionLock/build/tool4d"
-          executable = (
-              distribution / "tool4d/tool4d.exe"
-              if os.name == "nt"
-              else distribution / "tool4d.app/Contents/MacOS/tool4d"
-          )
-          project = root / "SessionLock/SessionLock-test/Project/SessionLock.4DProject"
-          command = [
-              str(executable), "--dataless", "--startup-method=test_all",
-              f"--project={project}",
-          ]
-          try:
-              result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-          except subprocess.TimeoutExpired as error:
-              print(error.stdout or b"")
-              print(error.stderr or b"", file=sys.stderr)
-              raise SystemExit("tool4d timed out")
-          print(result.stdout)
-          print(result.stderr, file=sys.stderr)
-          if result.returncode != 0:
-              raise SystemExit(f"tool4d exited with {result.returncode}")
-          if "PASS" not in result.stdout.splitlines():
-              raise SystemExit("tool4d did not emit the exact PASS marker")
+  validate:
+    uses: ./.github/workflows/validate.yml
+    with:
+      source-sha: ${{ github.sha }}

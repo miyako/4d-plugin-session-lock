@@ -1,0 +1,119 @@
+name: Signed release (explicitly gated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vVERSION tag approved for publication
+        required: true
+        type: string
+      publish:
+        description: Publish only after all validation, signing and notarization gates
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Require approved main workflow ref
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Release workflow must run from approved main; no publication occurred." >&2
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve approved immutable tag and VERSION
+        id: resolve
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag" >&2; exit 1; }
+          SHA=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$SHA" origin/main
+          VERSION=$(git show "$SHA:VERSION" | tr -d '\r\n')
+          [[ "$RELEASE_TAG" == "v$VERSION" ]] || { echo "Tag does not match VERSION" >&2; exit 1; }
+          {
+            echo "sha=$SHA"
+            echo "tag=$RELEASE_TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+      - name: Report validation-only mode
+        if: ${{ !inputs.publish }}
+        run: echo "Validation only. Signing and publication were NOT requested or performed." >> "$GITHUB_STEP_SUMMARY"
+  validate:
+    needs: source
+    uses: ./.github/workflows/validate.yml
+    with:
+      source-sha: ${{ needs.source.outputs.sha }}
+  sign:
+    if: inputs.publish
+    needs: [source, validate]
+    uses: ./.github/workflows/sign-candidate.yml
+    with:
+      source-sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.source.outputs.version }}
+    secrets: inherit
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish
+    needs: [source, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-notarized-candidate
+          path: SessionLock/build
+      - name: Verify notarized archive before draft upload
+        env:
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+        run: |
+          SHA=$(sha256sum "SessionLock/build/SessionLock-$RELEASE_VERSION.zip" | cut -d' ' -f1)
+          echo "RELEASE_SHA256=$SHA" >> "$GITHUB_ENV"
+          python tools/verify_release.py --directory SessionLock/build --version "$RELEASE_VERSION" --source "$SOURCE_SHA" --sha256 "$SHA"
+      - name: Upload draft, verify downloaded bytes, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.source.outputs.tag }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/tags/$RELEASE_TAG"
+          [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" == "$SOURCE_SHA" ]] || { echo "Release tag moved" >&2; exit 1; }
+          gh release create "$RELEASE_TAG" \
+            "SessionLock/build/SessionLock-$RELEASE_VERSION.zip" \
+            "SessionLock/build/SessionLock-$RELEASE_VERSION.zip.sha256" \
+            "SessionLock/build/SessionLock-$RELEASE_VERSION.zip.notarization.json" \
+            --verify-tag --draft --title "$RELEASE_TAG" \
+            --notes "macOS payload: Developer ID signed and Apple notarization Accepted. Windows x64 payload: NOT Authenticode-signed. Combined ZIP uses online notarization-ticket lookup (not stapled). See README for best-effort macOS detection and platform/manual-test limits."
+          gh release download "$RELEASE_TAG" --dir SessionLock/build/draft-download
+          python tools/verify_release.py --directory SessionLock/build/draft-download --version "$RELEASE_VERSION" --source "$SOURCE_SHA" --sha256 "$RELEASE_SHA256"
+          gh release edit "$RELEASE_TAG" --draft=false
+          gh release download "$RELEASE_TAG" --dir SessionLock/build/published-download
+          python tools/verify_release.py --directory SessionLock/build/published-download --version "$RELEASE_VERSION" --source "$SOURCE_SHA" --sha256 "$RELEASE_SHA256"

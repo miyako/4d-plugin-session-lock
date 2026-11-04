@@ -1,0 +1,40 @@
+name: Authorized branch signing validation (no release)
+
+on:
+  push:
+    branches: [miyako-session-lock-plugin]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signing-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: github.repository == 'miyako/4d-plugin-session-lock'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(cat VERSION)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+  validate:
+    needs: source
+    uses: ./.github/workflows/validate.yml
+    with:
+      source-sha: ${{ github.sha }}
+  sign:
+    needs: [source, validate]
+    uses: ./.github/workflows/sign-candidate.yml
+    with:
+      source-sha: ${{ github.sha }}
+      version: ${{ needs.source.outputs.version }}
+    secrets: inherit
