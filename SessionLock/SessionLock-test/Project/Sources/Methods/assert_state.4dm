@@ -1,0 +1,45 @@
+//%attributes = {"invisible":true}
+#DECLARE($state : Object)
+
+ASSERT(Value type($state)=Is object)
+ASSERT(OB Keys($state).length=9)
+ASSERT(Value type($state.lock)=Is text)
+ASSERT(($state.lock="unknown") | ($state.lock="locked") | ($state.lock="unlocked"))
+ASSERT(Value type($state.running)=Is Boolean)
+ASSERT(Value type($state.available)=Is Boolean)
+ASSERT(Value type($state.source)=Is text)
+ASSERT(Length($state.source)>0)
+assert_counter($state.generation)
+assert_counter($state.sequence)
+assert_counter($state.droppedTotal)
+ASSERT(Value type($state.error)=Is object)
+ASSERT(OB Keys($state.error).length=2)
+ASSERT(Value type($state.error.code)=Is real)
+ASSERT($state.error.code=Int($state.error.code))
+ASSERT(Value type($state.error.message)=Is text)
+If ($state.error.code#0)
+    ASSERT(Length($state.error.message)>0)
+End if
+If (Value type($state.observedAt)#Is null)
+    ASSERT(Value type($state.observedAt)=Is real)
+    ASSERT($state.observedAt>0)
+    ASSERT($state.observedAt=Int($state.observedAt))
+End if
+// Registration may be available while its timestamped snapshot is unknown.
+If ($state.lock#"unknown")
+    ASSERT($state.running=True)
+    ASSERT($state.available=True)
+    ASSERT(Value type($state.observedAt)=Is real)
+End if
+If (($state.source="macos.CGSession.undocumented") & ($state.error.code=20002))
+    ASSERT($state.running=True)
+    ASSERT($state.available=True)
+    ASSERT($state.lock="unknown")
+    ASSERT(Value type($state.observedAt)=Is real)
+    ASSERT($state.observedAt>0)
+    ASSERT($state.observedAt=Int($state.observedAt))
+    ASSERT($state.error.message="Undocumented lock snapshot key is absent or not Boolean")
+End if
+If (Not($state.running))
+    assert_stopped($state)
+End if

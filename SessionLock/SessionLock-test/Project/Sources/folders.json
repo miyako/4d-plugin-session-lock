@@ -1,0 +1,19 @@
+{
+    "Tests": {
+        "methods": [
+            "test_all",
+            "test_lifecycle",
+            "assert_state",
+            "assert_stopped",
+            "assert_result",
+            "assert_events",
+            "assert_counter"
+        ]
+    },
+    "Examples": {
+        "methods": [
+            "poll_session_lock"
+        ]
+    },
+    "trash": {}
+}

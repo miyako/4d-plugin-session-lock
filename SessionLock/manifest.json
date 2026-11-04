@@ -1,0 +1,10 @@
+{
+    "name": "SessionLock",
+    "id": 31047,
+    "commands": [
+        {"theme": "SessionLock", "syntax": "SessionLock Start():J", "threadSafe": true},
+        {"theme": "SessionLock", "syntax": "SessionLock State():J", "threadSafe": true},
+        {"theme": "SessionLock", "syntax": "SessionLock Events():J", "threadSafe": true},
+        {"theme": "SessionLock", "syntax": "SessionLock Stop():J", "threadSafe": true}
+    ]
+}

@@ -1,0 +1,26 @@
+//%attributes = {"invisible":true}
+#DECLARE($batch : Object)
+var $event : Object
+
+ASSERT(Value type($batch)=Is object)
+ASSERT(OB Keys($batch).length=3)
+ASSERT(Value type($batch.events)=Is collection)
+ASSERT($batch.events.length<=128)
+assert_counter($batch.dropped)
+assert_state($batch.state)
+For each ($event; $batch.events)
+    ASSERT(Value type($event)=Is object)
+    ASSERT(OB Keys($event).length=6)
+    ASSERT(Value type($event.previous)=Is text)
+    ASSERT(($event.previous="unknown") | ($event.previous="locked") | ($event.previous="unlocked"))
+    ASSERT(Value type($event.lock)=Is text)
+    ASSERT(($event.lock="locked") | ($event.lock="unlocked"))
+    ASSERT($event.previous#$event.lock)
+    ASSERT(Value type($event.source)=Is text)
+    ASSERT(Length($event.source)>0)
+    ASSERT(Value type($event.observedAt)=Is real)
+    ASSERT($event.observedAt>0)
+    ASSERT($event.observedAt=Int($event.observedAt))
+    assert_counter($event.sequence)
+    assert_counter($event.generation)
+End for each

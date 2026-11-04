@@ -9,3 +9,8 @@ example/cmake-build/
 .DS_Store
 example/.vs/*
 example/example/x64/*
+SessionLock/build*/
+SessionLock/SessionLock-test/Plugins/
+SessionLock/SessionLock-test/Data/
+SessionLock/SessionLock-test/Project/DerivedData/
+SessionLock/SessionLock-test/userPreferences.*
