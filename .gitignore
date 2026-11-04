@@ -1,0 +1,11 @@
+example/example-test/Data/*
+example/example-test/Project/DerivedData/*
+example/example-test/userPreferences.*
+example/example-test/Plugins/
+example/build/
+example/cmake-build/
+**/xcuserdata/
+*.vcxproj.user
+.DS_Store
+example/.vs/*
+example/example/x64/*
